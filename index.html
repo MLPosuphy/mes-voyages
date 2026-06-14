@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mes Voyages ✈️ — Carnet de bord</title>
+<meta name="theme-color" content="#4f6df5">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css?v=28">
+<!-- Leaflet (carte interactive) — nécessite internet ; le reste de l'app fonctionne sans -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Leaflet.markercluster : regroupe des milliers de photos sans figer la carte -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<!-- globe.gl (three.js) : globe terrestre 3D — nécessite internet -->
+<script src="https://unpkg.com/globe.gl@2.32.0/dist/globe.gl.min.js"></script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>✈️</text></svg>">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== Bouton menu (mobile) ===== -->
+  <button class="menu-toggle" onclick="toggleSidebar()" title="Menu">☰</button>
+
+  <!-- ===== Barre latérale ===== -->
+  <aside class="sidebar">
+    <div class="logo" onclick="showView('dashboard')">
+      <span class="logo-emoji">🧭</span>
+      <div>
+        <div class="logo-title">Mes Voyages</div>
+        <div class="logo-sub">Carnet de bord</div>
+      </div>
+    </div>
+
+    <div class="fam-indicator" id="fam-indicator" style="display:none" onclick="openFamilyMenu()"
+      title="Mode famille : changer de carnet ou d'utilisateur"></div>
+
+    <input class="search-input sidebar-search" placeholder="🔎 Rechercher partout…"
+      onkeydown="if(event.key==='Enter'){globalSearch(this.value);this.value='';}">
+
+    <nav class="nav">
+      <button class="nav-btn" data-view="dashboard" onclick="showView('dashboard')">🏠 Tableau de bord</button>
+      <button class="nav-btn" data-view="trips" onclick="showView('trips')">🧳 Mes voyages</button>
+      <button class="nav-btn" data-view="wishlist" onclick="showView('wishlist')">💫 Liste d'envies</button>
+      <button class="nav-btn" data-view="calendrier" onclick="showView('calendrier')">📅 Calendrier</button>
+      <button class="nav-btn" data-view="monde" onclick="showView('monde')">🌍 Carte du monde</button>
+      <button class="nav-btn" data-view="planisphere" onclick="showView('planisphere')">🛰️ Planisphère</button>
+      <button class="nav-btn" data-view="globe" onclick="showView('globe')">🌐 Globe 3D</button>
+      <button class="nav-btn" data-view="stats" onclick="showView('stats')">📊 Statistiques</button>
+      <button class="nav-btn" data-view="settings" onclick="showView('settings')">⚙️ Paramètres</button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="theme-toggle" onclick="toggleTheme()" title="Changer de thème">
+        <span id="theme-icon">🌙</span> <span id="theme-label">Mode sombre</span>
+      </button>
+      <button class="btn btn-primary btn-block" onclick="openTripForm()">＋ Nouveau voyage</button>
+    </div>
+  </aside>
+
+  <!-- ===== Contenu principal ===== -->
+  <main class="main" id="main">
+    <!-- rendu par app.js -->
+  </main>
+
+</div>
+
+<!-- ===== Fenêtre modale ===== -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this) closeModal()">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <h2 id="modal-title"></h2>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<!-- ===== Bouton flottant : dépense rapide ===== -->
+<button class="fab" title="Dépense rapide" onclick="quickExpense()">💸</button>
+
+<!-- ===== Notification toast ===== -->
+<div class="toast" id="toast"></div>
+
+<script src="data.js?v=28"></script>
+<script src="app.js?v=28"></script>
+<script src="features.js?v=28"></script>
+<script src="album.js?v=28"></script>
+<script src="extras.js?v=28"></script>
+<script src="family.js?v=28"></script>
+<script>
+  // PWA : le service worker ne fonctionne qu'en http(s), pas en file://
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+</script>
+</body>
+</html>

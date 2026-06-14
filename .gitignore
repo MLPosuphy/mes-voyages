@@ -1,0 +1,11 @@
+# ⚠️ Données privées de la famille — NE JAMAIS publier en ligne !
+carnet-famille.json
+carnet-*.json
+profils.json
+
+# Sauvegardes locales éventuelles
+*.zip
+mes-voyages-sauvegarde-*.json
+
+# Config locale (éditeur / prévisualisation)
+.claude/
