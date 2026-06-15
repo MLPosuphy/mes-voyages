@@ -6,7 +6,7 @@
    pour permettre les CARTES HORS-LIGNE.
    ============================================================ */
 
-const CACHE = "mes-voyages-v23";
+const CACHE = "mes-voyages-v24";
 const TILE_CACHE = "mes-voyages-tiles-v1";
 const TILE_MAX = 2000; // nb max de tuiles gardées (évite de saturer le stockage)
 

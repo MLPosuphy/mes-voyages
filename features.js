@@ -694,16 +694,20 @@ function saveBestOf(tripId) {
 /* ===================== Pièces jointes (IndexedDB) ===================== */
 
 function fdb() {
-  return new Promise((res, rej) => {
-    if (window._fdb) return res(window._fdb);
+  if (window._fdb) return Promise.resolve(window._fdb);
+  // On met en cache la promesse d'ouverture : si plusieurs vignettes/popups
+  // demandent la base en même temps (planisphère), on n'ouvre qu'UNE seule connexion.
+  if (window._fdbOpening) return window._fdbOpening;
+  window._fdbOpening = new Promise((res, rej) => {
     const rq = indexedDB.open("mesVoyagesFiles", 1);
     rq.onupgradeneeded = () => {
       const st = rq.result.createObjectStore("files", { keyPath: "id" });
       st.createIndex("owner", "owner");
     };
-    rq.onsuccess = () => { window._fdb = rq.result; res(rq.result); };
-    rq.onerror = () => rej(rq.error);
+    rq.onsuccess = () => { window._fdb = rq.result; window._fdbOpening = null; res(rq.result); };
+    rq.onerror = () => { window._fdbOpening = null; rej(rq.error); };
   });
+  return window._fdbOpening;
 }
 
 async function fdbList(owner) {
@@ -1020,13 +1024,26 @@ function addGeoPhotoMarkers(map, t, pts) {
 
 // Popup qui charge la photo à l'ouverture (depuis IndexedDB)
 function bindPhotoPopup(marker, fileId, title) {
-  marker.bindPopup(`<div style="text-align:center;"><b>📷 ${esc(title)}</b><br><span class="muted small">Chargement…</span></div>`);
+  const head = `<b>📷 ${esc(title)}</b>`;
+  marker.bindPopup(`<div style="text-align:center;">${head}<br><span class="muted small">Chargement…</span></div>`);
   marker.on("popupopen", async () => {
-    const rec = await fdbGet(fileId);
-    if (!rec) return;
+    // L'object URL précédent (popup rouvert) est révoqué pour ne pas fuir en mémoire.
+    if (marker._phUrl) { try { URL.revokeObjectURL(marker._phUrl); } catch (e) {} marker._phUrl = null; }
+    let rec = null;
+    try { rec = await fdbGet(fileId); } catch (e) { /* IndexedDB indisponible */ }
+    if (!rec || !rec.blob) {
+      // Cas fréquent : le carnet (texte) est synchronisé via pCloud mais la photo
+      // vit dans l'IndexedDB de l'appareil — donc absente sur un autre appareil.
+      marker.setPopupContent(`<div style="text-align:center;">${head}<br><span class="muted small">📭 Photo absente de cet appareil<br>(importe le ZIP de sauvegarde pour la voir)</span></div>`);
+      return;
+    }
     const url = URL.createObjectURL(rec.blob);
-    marker.setPopupContent(`<div style="text-align:center;"><b>📷 ${esc(title)}</b><br>
+    marker._phUrl = url;
+    marker.setPopupContent(`<div style="text-align:center;">${head}<br>
       <img src="${url}" style="max-width:220px;max-height:180px;border-radius:8px;margin-top:6px;cursor:pointer;" onclick="viewAttachment('${fileId}')"></div>`);
+  });
+  marker.on("popupclose", () => {
+    if (marker._phUrl) { try { URL.revokeObjectURL(marker._phUrl); } catch (e) {} marker._phUrl = null; }
   });
 }
 

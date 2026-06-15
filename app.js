@@ -415,7 +415,10 @@ function renderTrips(main) {
   main.innerHTML = `
     <div class="row-between" style="margin-bottom:6px;">
       <div><h1 class="page-title">🧳 Mes voyages</h1><p class="page-sub">${state.trips.length} voyage${state.trips.length > 1 ? "s" : ""} dans le carnet</p></div>
-      <button class="btn btn-primary" onclick="openTripForm()">＋ Nouveau voyage</button>
+      <div class="row" style="gap:8px;">
+        <button class="btn btn-secondary" onclick="openTripFromPhotos()" title="Créer un voyage automatiquement à partir de tes photos (dates et lieux détectés)">📸 Depuis mes photos</button>
+        <button class="btn btn-primary" onclick="openTripForm()">＋ Nouveau voyage</button>
+      </div>
     </div>
     <div class="filters">
       ${filterChips}
@@ -435,7 +438,12 @@ function filterByTag(tag) {
 
 function tripsGridHTML(trips) {
   if (!trips.length) {
-    return `<div class="empty-state card"><span class="big-emoji">🏝️</span><p>Aucun voyage ne correspond.<br>Et si tu en créais un nouveau ?</p></div>`;
+    return `<div class="empty-state card"><span class="big-emoji">🏝️</span>
+      <p>Aucun voyage ne correspond.<br>Crée-en un, ou laisse tes photos faire le travail :</p>
+      <div class="row" style="gap:8px;justify-content:center;margin-top:12px;">
+        <button class="btn btn-secondary" onclick="openTripFromPhotos()">📸 Depuis mes photos</button>
+        <button class="btn btn-primary" onclick="openTripForm()">＋ Nouveau voyage</button>
+      </div></div>`;
   }
   return `<div class="grid grid-3">${trips.map(tripCardHTML).join("")}</div>`;
 }
@@ -533,6 +541,161 @@ function saveTripForm(id) {
   closeModal();
   if (id && currentTripId === id) renderTripDetail(document.getElementById("main"));
   else showView("trips");
+}
+
+/* ===== Créer un voyage automatiquement à partir d'un lot de photos =====
+   Pour les voyages anciens ou « par flemme » : on lit les métadonnées EXIF
+   (date + GPS) de toutes les photos, on devine la période et le lieu, puis
+   on pré-remplit un formulaire avant de créer le voyage et d'y placer les photos. */
+
+function openTripFromPhotos() {
+  openModal("📸 Nouveau voyage depuis mes photos", `
+    <p class="muted small" style="margin-bottom:12px;">
+      Choisis <b>toutes les photos d'un même voyage</b>. Idéalement les photos d'origine prises avec le téléphone :
+      elles contiennent souvent la <b>date</b> et le <b>lieu GPS</b> 📍.<br>
+      <span class="small">⚠️ Attention : les photos reçues par WhatsApp / Messenger ont généralement perdu leur GPS.</span>
+    </p>
+    <label class="btn btn-primary btn-block" style="cursor:pointer;">📂 Choisir mes photos
+      <input type="file" accept="image/*" multiple style="display:none" onchange="analyzePhotosForTrip(this)"></label>
+    <div id="tfp-status" class="muted small" style="margin-top:12px;text-align:center;"></div>`);
+}
+
+// Reverse-geocode best-effort (ville + pays) d'un point — sert à pré-remplir le formulaire
+async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=10&accept-language=fr&lat=${lat}&lon=${lng}`);
+    const d = await res.json();
+    const a = (d && d.address) || {};
+    return { city: a.city || a.town || a.village || a.county || a.state || "", country: a.country || "" };
+  } catch (e) { return { city: "", country: "" }; }
+}
+
+async function analyzePhotosForTrip(input) {
+  const files = [...input.files];
+  input.value = "";
+  if (!files.length) return;
+  const status = document.getElementById("tfp-status");
+  const metas = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (status) status.textContent = `⏳ Analyse des photos… ${i + 1}/${files.length}`;
+    if (!f.type || !f.type.startsWith("image/")) continue;
+    const meta = await readExifMeta(f);
+    const gps = meta && meta.gps;
+    const date = (meta && meta.date) || (typeof planPhotoDate === "function" ? planPhotoDate({ name: f.name }, null) : null);
+    metas.push({ file: f, gps, date });
+  }
+  if (!metas.length) { if (status) status.textContent = "Aucune image lisible dans la sélection 🤔"; return; }
+  window._tfp = { metas };
+
+  const dates = metas.filter(m => m.date).map(m => m.date).sort();
+  const geo = metas.filter(m => m.gps);
+  const start = dates[0] || "";
+  const end = dates[dates.length - 1] || "";
+
+  // Lieu médian (robuste aux photos isolées) → reverse-geocode best-effort
+  let place = { city: "", country: "" };
+  if (geo.length) {
+    const lat = geo.map(m => m.gps.lat).sort((a, b) => a - b)[Math.floor(geo.length / 2)];
+    const lng = geo.map(m => m.gps.lng).sort((a, b) => a - b)[Math.floor(geo.length / 2)];
+    if (status) status.textContent = "🌍 Identification du lieu…";
+    place = await reverseGeocode(lat, lng);
+  }
+  showTripFromPhotosForm({ total: metas.length, geo: geo.length, dated: dates.length, start, end, place });
+}
+
+function showTripFromPhotosForm(s) {
+  const guessTitle = s.place.city ? "Voyage à " + s.place.city
+    : s.place.country ? "Voyage — " + s.place.country
+    : (s.start ? "Voyage " + s.start.slice(0, 4) : "Mon voyage");
+  const noGps = s.total - s.geo;
+  openModal("📸 Créer le voyage", `
+    <div class="card" style="margin-bottom:14px;padding:12px 14px;">
+      📷 <b>${s.total}</b> photo(s) · 📍 <b>${s.geo}</b> géolocalisée(s) · 📅 <b>${s.dated}</b> datée(s)
+      ${s.start ? `<br>📆 Période détectée : <b>${fmtDate(s.start)}</b> → <b>${fmtDate(s.end)}</b>` : `<br><span class="muted small">Aucune date détectée — renseigne-la ci-dessous.</span>`}
+    </div>
+    <div class="form-group"><label>Titre du voyage *</label>
+      <input id="tfp-title" placeholder="Ex : Road trip en Italie" value="${esc(guessTitle)}"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Destination *</label>
+        <input id="tfp-dest" placeholder="Ex : Rome, Florence…" value="${esc(s.place.city || s.place.country || "")}"></div>
+      <div class="form-group"><label>Pays</label>
+        <input id="tfp-country" placeholder="Ex : Italie" value="${esc(s.place.country || "")}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Date de départ</label><input id="tfp-start" type="date" value="${s.start}"></div>
+      <div class="form-group"><label>Date de retour</label><input id="tfp-end" type="date" value="${s.end}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Nombre de voyageurs</label><input id="tfp-travelers" type="number" min="1" value="1"></div>
+      <div class="form-group"><label>Budget</label><input id="tfp-budget" type="number" min="0" step="10" placeholder="0"></div>
+    </div>
+    <p class="muted small">Les <b>${s.geo}</b> photo(s) géolocalisée(s) seront placées sur la carte du voyage.${noGps > 0 ? ` Les ${noGps} sans GPS ne seront pas placées (mais tu pourras les joindre au journal).` : ""}</p>
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="window._tfp=null;closeModal()">Annuler</button>
+      <button class="btn btn-primary" id="tfp-create" onclick="createTripFromPhotos()">🎉 Créer le voyage</button>
+    </div>`);
+}
+
+async function createTripFromPhotos() {
+  const tfp = window._tfp;
+  if (!tfp || !tfp.metas) { closeModal(); return; }
+  const title = document.getElementById("tfp-title").value.trim();
+  const dest = document.getElementById("tfp-dest").value.trim();
+  if (!title || !dest) { toast("⚠️ Donne au moins un titre et une destination"); return; }
+  const start = document.getElementById("tfp-start").value;
+  const end = document.getElementById("tfp-end").value;
+  if (start && end && end < start) { toast("⚠️ La date de retour est avant le départ"); return; }
+
+  const today = todayISO();
+  const status = (end && end < today) ? "termine"
+    : (start && start <= today && (!end || today <= end)) ? "encours"
+    : "planifie";
+
+  const trip = Object.assign({
+    id: uid(), activities: [], expenses: [], packing: [], documents: [], journal: [], steps: [],
+    todos: [], shopping: [], people: [], geophotos: []
+  }, {
+    title, destination: dest,
+    country: document.getElementById("tfp-country").value.trim(),
+    start, end, status,
+    travelers: +document.getElementById("tfp-travelers").value || 1,
+    budget: +document.getElementById("tfp-budget").value || 0,
+    color: COULEURS[state.trips.length % COULEURS.length],
+    tags: ["photos"], notes: ""
+  });
+
+  const btn = document.getElementById("tfp-create");
+  if (btn) { btn.disabled = true; btn.textContent = "⏳ Import des photos…"; }
+
+  let added = 0, nogps = 0;
+  for (let i = 0; i < tfp.metas.length; i++) {
+    const m = tfp.metas[i];
+    if (!m.gps) { nogps++; continue; }
+    if (btn) btn.textContent = `⏳ Import ${i + 1}/${tfp.metas.length}…`;
+    const norm = await normalizeFileBlob(m.file);
+    if (!norm) continue;
+    const id = uid();
+    try {
+      const db = await fdb();
+      await new Promise((res, rej) => {
+        const tx = db.transaction("files", "readwrite");
+        tx.objectStore("files").put({ id, owner: "geo:" + id, name: m.file.name, type: norm.type, blob: norm.blob });
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+    } catch (e) { continue; }
+    trip.geophotos.push(m.date
+      ? { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng, date: m.date }
+      : { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng });
+    added++;
+  }
+
+  state.trips.push(trip);
+  saveState();
+  window._tfp = null;
+  closeModal();
+  toast(`🎉 Voyage « ${title} » créé · ${added} photo(s) sur la carte${nogps ? ` · ${nogps} sans GPS` : ""}`);
+  openTrip(trip.id, added ? "carte" : "itineraire");
 }
 
 function deleteTrip(id) {

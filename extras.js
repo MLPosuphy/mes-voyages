@@ -2418,8 +2418,11 @@ function planPumpThumb() {
   while (window._planActive < 6 && window._planQ && window._planQ.length) {
     const [id, el] = window._planQ.shift();
     window._planActive++;
-    planThumbURL(id).then(url => { if (url && el.isConnected) { el.style.backgroundImage = `url(${url})`; el.classList.add("loaded"); } })
-      .catch(() => {}).finally(() => { window._planActive--; planPumpThumb(); });
+    planThumbURL(id).then(url => {
+      if (!el.isConnected) return;
+      if (url) { el.style.backgroundImage = `url(${url})`; el.classList.add("loaded"); }
+      else { el.classList.add("missing"); el.textContent = "📷"; } // blob absent de cet appareil
+    }).catch(() => {}).finally(() => { window._planActive--; planPumpThumb(); });
   }
 }
 function planLoadVisibleThumbs() {
