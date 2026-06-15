@@ -374,12 +374,18 @@ async function firstTripPhoto(t) {
 }
 
 function hydrateTripCovers() {
+  // On révoque les couvertures du rendu précédent (DOM détaché) : seule la vue
+  // courante garde ses object URLs en mémoire (fond CSS → pas d'onload possible).
+  (window._coverUrls || []).forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} });
+  window._coverUrls = [];
   document.querySelectorAll(".trip-cover[data-cover]").forEach(async el => {
     if (el.dataset.done) return;
     el.dataset.done = "1";
     const blob = await firstTripPhoto(getTrip(el.dataset.cover));
     if (blob) {
-      el.style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
+      const url = URL.createObjectURL(blob);
+      window._coverUrls.push(url);
+      el.style.backgroundImage = `url(${url})`;
       el.classList.add("has-photo");
     }
   });

@@ -802,11 +802,13 @@ async function deleteAttachment(id) {
 }
 
 async function viewAttachment(id) {
-  const rec = await fdbGet(id);
-  if (!rec) return;
+  let rec = null;
+  try { rec = await fdbGet(id); } catch (e) {}
+  if (!rec || !rec.blob) { toast("📭 Fichier absent de cet appareil"); return; }
   const url = URL.createObjectURL(rec.blob);
   if (rec.type.startsWith("image/")) {
-    openModal("🖼️ " + esc(rec.name), `<img src="${url}" style="max-width:100%;border-radius:12px;" alt="">`);
+    // onload révoque l'URL une fois l'image décodée → pas de fuite mémoire
+    openModal("🖼️ " + esc(rec.name), `<img src="${url}" onload="URL.revokeObjectURL(this.src)" style="max-width:100%;border-radius:12px;" alt="">`);
   } else {
     window.open(url, "_blank");
   }
@@ -829,7 +831,7 @@ function loadAttachZones() {
       zone.innerHTML = files.map(f => {
         if (f.type.startsWith("image/")) {
           const url = URL.createObjectURL(f.blob);
-          return `<span class="attach-item"><img class="attach-thumb" src="${url}" onclick="viewAttachment('${f.id}')" alt="${esc(f.name)}" title="${esc(f.name)}"><button class="icon-btn" onclick="deleteAttachment('${f.id}')">🗑️</button></span>`;
+          return `<span class="attach-item"><img class="attach-thumb" src="${url}" onload="URL.revokeObjectURL(this.src)" onclick="viewAttachment('${f.id}')" alt="${esc(f.name)}" title="${esc(f.name)}"><button class="icon-btn" onclick="deleteAttachment('${f.id}')">🗑️</button></span>`;
         }
         if (f.type.startsWith("audio/")) {
           const url = URL.createObjectURL(f.blob);
@@ -997,10 +999,11 @@ function loadGeoGallery(t) {
       <button class="icon-btn" onclick="deleteGeoPhoto('${t.id}','${p.id}')">🗑️</button>
     </span>`).join("");
   (t.geophotos || []).forEach(async p => {
-    const rec = await fdbGet(p.id);
-    if (!rec) return;
+    let rec = null;
+    try { rec = await fdbGet(p.id); } catch (e) {}
+    if (!rec || !rec.blob) return;
     const img = box.querySelector(`img[data-geo="${p.id}"]`);
-    if (img) img.src = URL.createObjectURL(rec.blob);
+    if (img) { img.onload = () => URL.revokeObjectURL(img.src); img.src = URL.createObjectURL(rec.blob); }
   });
 }
 
@@ -1091,7 +1094,7 @@ function enrichStepPopup(marker, stepId, baseHTML) {
     try { imgs = (await fdbList(stepId)).filter(f => f.type.startsWith("image/")); } catch (e) {}
     if (!imgs.length) return;
     const thumbs = imgs.map(f =>
-      `<img src="${URL.createObjectURL(f.blob)}" style="width:54px;height:54px;object-fit:cover;border-radius:6px;margin:4px 4px 0 0;cursor:pointer;" onclick="viewAttachment('${f.id}')">`).join("");
+      `<img src="${URL.createObjectURL(f.blob)}" onload="URL.revokeObjectURL(this.src)" style="width:54px;height:54px;object-fit:cover;border-radius:6px;margin:4px 4px 0 0;cursor:pointer;" onclick="viewAttachment('${f.id}')">`).join("");
     marker.setPopupContent(baseHTML + `<div style="margin-top:6px;max-width:206px;">${thumbs}</div>`);
   });
 }
