@@ -648,7 +648,19 @@ function showTripFromPhotosForm(s) {
       <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
         <input type="checkbox" id="tfp-itinerary" checked style="width:auto;margin-top:3px;">
         <span>🧭 <b>Reconstruire l'itinéraire</b> à partir des photos<br>
-          <span class="muted small">On regroupe tes photos par lieu et par jour pour deviner les étapes du voyage, dans l'ordre, avec le moyen de transport le plus probable. (Tu pourras tout ajuster ensuite.)</span></span></label>
+          <span class="muted small">On dégage les <b>grosses étapes</b> (l'itinéraire principal) puis les <b>déambulations</b> à l'intérieur — chaque photo compte. Transport deviné, tout reste ajustable.</span></span></label>
+    </div>
+    <div class="form-group">
+      <label>C'était quel genre de voyage ?</label>
+      <select id="tfp-triptype">
+        <option value="auto" selected>✨ Détection automatique</option>
+        <option value="roadtrip">🛣️ Road trip (plein d'arrêts)</option>
+        <option value="weekend">🏙️ Week-end en ville</option>
+        <option value="cityweek">🌆 Séjour en ville (~1 semaine)</option>
+        <option value="excursion">🥾 Excursion / sortie à la journée</option>
+        <option value="circuit">🗺️ Circuit (plusieurs villes)</option>
+      </select>
+      <span class="muted small">Ajuste la finesse des grosses étapes (ex. un week-end en ville = 1 étape + déambulations dedans ; un road trip = chaque arrêt).</span>
     </div>` : ""}
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="window._tfp=null;closeModal()">Annuler</button>
@@ -667,22 +679,51 @@ function clusterStays(pts, gapKm) {
     if (cur) {
       const c = { lat: cur.sumLat / cur.n, lng: cur.sumLng / cur.n };
       if (haversineKm(c, p) <= gapKm) {
-        cur.sumLat += p.lat; cur.sumLng += p.lng; cur.n++; cur.last = p.ts; cur.count++;
+        cur.sumLat += p.lat; cur.sumLng += p.lng; cur.n++; cur.last = p.ts; cur.count++; cur.pts.push(p);
         continue;
       }
       stays.push(cur);
     }
-    cur = { sumLat: p.lat, sumLng: p.lng, n: 1, first: p.ts, last: p.ts, count: 1 };
+    cur = { sumLat: p.lat, sumLng: p.lng, n: 1, first: p.ts, last: p.ts, count: 1, pts: [p] };
   }
   if (cur) stays.push(cur);
-  return stays.map(c => ({ lat: c.sumLat / c.n, lng: c.sumLng / c.n, first: c.first, last: c.last, count: c.count }));
+  return stays.map(c => ({ lat: c.sumLat / c.n, lng: c.sumLng / c.n, first: c.first, last: c.last, count: c.count, pts: c.pts }));
 }
 
-// On élargit le seuil tant qu'il y a trop d'étapes (évite un itinéraire illisible)
-function reconstructStays(pts) {
-  let gap = 30, stays = clusterStays(pts, gap);
-  while (stays.length > 30 && gap < 600) { gap *= 1.7; stays = clusterStays(pts, gap); }
+// On élargit le seuil tant qu'il y a trop d'étapes principales (lisibilité)
+function clusterAdaptive(pts, gapKm, maxSteps) {
+  let g = gapKm, stays = clusterStays(pts, g);
+  while (stays.length > maxSteps && g < 1500) { g *= 1.6; stays = clusterStays(pts, g); }
   return stays;
+}
+
+/* Profils par type de voyage : pilotent UNIQUEMENT la granularité des grosses
+   étapes (gap = rayon de regroupement, seuils de « significativité ») et le
+   transport local. Aucune photo n'est jamais filtrée : les points non retenus
+   comme grosse étape restent en déambulation (marqueur + trace fine). */
+const TRIP_PROFILES = {
+  roadtrip:  { tag: "road trip",      gap: 12, maxSteps: 60, minMainPhotos: 2, minDwellMin: 30,  local: "voiture", merge: false },
+  weekend:   { tag: "week-end ville", gap: 80, maxSteps: 4,  minMainPhotos: 3, minDwellMin: 120, local: "pied",    merge: true  },
+  cityweek:  { tag: "séjour ville",   gap: 60, maxSteps: 8,  minMainPhotos: 3, minDwellMin: 120, local: "pied",    merge: true  },
+  excursion: { tag: "excursion",      gap: 5,  maxSteps: 6,  minMainPhotos: 1, minDwellMin: 10,  local: "pied",    merge: false },
+  circuit:   { tag: "circuit",        gap: 30, maxSteps: 30, minMainPhotos: 2, minDwellMin: 30,  local: "voiture", merge: true  }
+};
+
+// Détection auto du profil d'après l'étendue géographique + la durée
+function autoProfile(pts) {
+  const ll = pts.filter(p => p.ts != null);
+  if (ll.length < 2) return { key: "excursion", p: TRIP_PROFILES.excursion };
+  const lats = ll.map(p => p.lat), lngs = ll.map(p => p.lng);
+  const spread = haversineKm({ lat: Math.min(...lats), lng: Math.min(...lngs) }, { lat: Math.max(...lats), lng: Math.max(...lngs) });
+  const tss = ll.map(p => p.ts).sort((a, b) => a - b);
+  const days = (tss[tss.length - 1] - tss[0]) / 86400000;
+  let key;
+  if (spread >= 400) key = "circuit";
+  else if (spread >= 60) key = "roadtrip";
+  else if (days <= 1.2) key = "excursion";
+  else if (days <= 3.5) key = "weekend";
+  else key = "cityweek";
+  return { key, p: TRIP_PROFILES[key] };
 }
 
 // Moyen de transport le plus probable entre 2 séjours (distance + vitesse implicite)
@@ -748,35 +789,74 @@ async function createTripFromPhotos() {
         tx.oncomplete = res; tx.onerror = () => rej(tx.error);
       });
     } catch (e) { continue; }
-    trip.geophotos.push(m.date
-      ? { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng, date: m.date }
-      : { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng });
+    const gp = { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng };
+    if (m.date) gp.date = m.date;
+    if (m.ts != null) gp.ts = m.ts; // horodatage → trace des déambulations à l'affichage
+    trip.geophotos.push(gp);
     geoPts.push({ lat: m.gps.lat, lng: m.gps.lng, ts: m.ts });
     added++;
   }
 
-  // 🧭 Reconstruction de l'itinéraire : regroupe les photos en séjours ordonnés,
-  // nomme chaque étape (reverse-geocode) et devine le transport entre elles.
+  // 🧭 Reconstruction en 2 niveaux : grosses étapes (itinéraire principal) +
+  // déambulations (toutes les photos comptent, aucune n'est écartée).
   let stepCount = 0;
   if (wantsItinerary && geoPts.length >= 2) {
-    const stays = reconstructStays(geoPts);
-    for (let i = 0; i < stays.length; i++) {
-      const c = stays[i];
-      if (btn) btn.textContent = `🧭 Reconstruction… étape ${i + 1}/${stays.length}`;
+    const sel = (document.getElementById("tfp-triptype") || {}).value || "auto";
+    const { key: profKey, p: profile } = (sel === "auto" || !TRIP_PROFILES[sel])
+      ? autoProfile(geoPts) : { key: sel, p: TRIP_PROFILES[sel] };
+    trip.tripType = profKey;
+    if (profile.tag && !trip.tags.includes(profile.tag)) trip.tags.push(profile.tag);
+
+    // 1) Regroupement grossier (rayon du profil), puis sélection des séjours « significatifs »
+    const stays = clusterAdaptive(geoPts, profile.gap, profile.maxSteps);
+    let mains = stays.filter(st => st.count >= profile.minMainPhotos || (st.last - st.first) / 60000 >= profile.minDwellMin);
+    if (!mains.length) mains = stays.slice(); // toujours au moins les séjours détectés
+
+    // 2) Chaque photo (même mineure / de passage) est rattachée à la grosse étape
+    //    où l'on était « basé » (la dernière commencée avant la photo) → rien d'écarté.
+    const allPts = geoPts.filter(p => p.ts != null).sort((a, b) => a.ts - b.ts);
+    const attached = mains.map(() => 0);
+    for (const p of allPts) {
+      let idx = 0;
+      for (let k = 0; k < mains.length; k++) { if (mains[k].first <= p.ts) idx = k; else break; }
+      attached[idx]++;
+    }
+
+    // 3) Nommage (reverse-geocode) des grosses étapes
+    for (let i = 0; i < mains.length; i++) {
+      if (btn) btn.textContent = `🧭 Reconstruction… étape ${i + 1}/${mains.length}`;
       let name = "";
-      try { const g = await reverseGeocode(c.lat, c.lng); name = g.city || g.country || ""; } catch (e) {}
-      if (!name) name = "Étape " + (i + 1);
+      try { const g = await reverseGeocode(mains[i].lat, mains[i].lng); name = g.city || g.country || ""; } catch (e) {}
+      mains[i]._name = name || ("Étape " + (i + 1));
+      mains[i]._photos = attached[i];
+      if (i < mains.length - 1) await new Promise(r => setTimeout(r, 1100)); // politesse Nominatim (1 req/s)
+    }
+
+    // 4) Profils « ville » : fusionne les étapes consécutives sur la même ville
+    let finals = mains;
+    if (profile.merge) {
+      finals = [];
+      for (const c of mains) {
+        const prev = finals[finals.length - 1];
+        if (prev && prev._name === c._name) { prev.last = c.last; prev._photos += c._photos; }
+        else finals.push(Object.assign({}, c));
+      }
+    }
+
+    // 5) Création des étapes : transport local pour les courts trajets, deviné pour les longs
+    for (let i = 0; i < finals.length; i++) {
+      const c = finals[i];
       const d1 = new Date(c.first), d2 = new Date(c.last);
       const sameDay = isoOfDate(d1) === isoOfDate(d2);
       const dateLabel = sameDay ? fmtDateShort(isoOfDate(d1)) : `${fmtDateShort(isoOfDate(d1))} → ${fmtDateShort(isoOfDate(d2))}`;
+      let transport = profile.local;
+      if (i > 0) transport = haversineKm(finals[i - 1], c) < 15 ? profile.local : guessLegTransport(finals[i - 1], c);
       trip.steps.push({
-        id: uid(), name, lat: c.lat, lng: c.lng,
-        transport: i === 0 ? "voiture" : guessLegTransport(stays[i - 1], c),
-        notes: `📷 ${c.count} photo(s) · ${dateLabel}`,
-        visited: true, visitedAt: isoOfDate(d1)
+        id: uid(), name: c._name, lat: c.lat, lng: c.lng, transport,
+        notes: `📷 ${c._photos} photo(s) · ${dateLabel}`,
+        visited: true, visitedAt: isoOfDate(d1), arrTs: c.first
       });
       stepCount++;
-      if (i < stays.length - 1) await new Promise(r => setTimeout(r, 1100)); // 1 req/s : politesse Nominatim
     }
   }
 
@@ -1063,6 +1143,7 @@ function renderCarte(el, t) {
         <label class="btn btn-ghost btn-sm" style="cursor:pointer;" title="Importer des photos contenant leurs coordonnées GPS">📷 Importer des photos géolocalisées
           <input type="file" accept="image/*" multiple style="display:none" onchange="importGeoPhotos('${t.id}',this)">
         </label>
+        ${(t.steps || []).some(s => s.arrTs != null) ? `<button class="btn btn-ghost btn-sm" title="Afficher / masquer les déambulations (trace fine de toutes les photos à l'intérieur de chaque étape)" onclick="toggleWander()">🐾 Déambulations</button>` : ""}
         <button class="btn btn-ghost btn-sm" title="Exporter l'itinéraire en GPX (GPS, Google Earth…)" onclick="exportGPX('${t.id}')">📤 GPX</button>
         <label class="btn btn-ghost btn-sm" style="cursor:pointer;" title="Importer une trace ou des points GPX">📥 GPX
           <input type="file" accept=".gpx,application/gpx+xml,text/xml" style="display:none" onchange="importGPX('${t.id}',this)">
@@ -1145,6 +1226,7 @@ function initStepMap(t) {
   });
 
   addGeoPhotoMarkers(map, t, pts);
+  addWanderTraces(map, t); // déambulations (trace fine de toutes les photos)
 
   // Entrées de journal géolocalisées 📔
   (t.journal || []).filter(j => j.lat && j.lng).forEach(j => {

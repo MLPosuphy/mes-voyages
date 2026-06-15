@@ -1012,6 +1012,40 @@ function focusGeoPhoto(tripId, id) {
   if (m) m.openPopup();
 }
 
+// Déambulations : trace fine reliant TOUTES les photos dans l'ordre chronologique,
+// regroupées par grosse étape (la dernière commencée avant la photo). Aucune photo
+// n'est écartée — c'est la couche « détail » sous l'itinéraire principal.
+function addWanderTraces(map, t) {
+  window._wanderLayers = [];
+  if (window._showWander === false) return;
+  const steps = (t.steps || []).filter(s => s.arrTs != null).sort((a, b) => a.arrTs - b.arrTs);
+  if (!steps.length) return;
+  const photos = (t.geophotos || [])
+    .filter(p => typeof p.lat === "number" && typeof p.lng === "number")
+    .map(p => ({ lat: p.lat, lng: p.lng, ts: p.ts != null ? p.ts : (p.date ? Date.parse(p.date + "T12:00:00") : null) }))
+    .filter(p => p.ts != null)
+    .sort((a, b) => a.ts - b.ts);
+  if (photos.length < 2) return;
+  const groups = steps.map(() => []);
+  for (const p of photos) {
+    let idx = 0;
+    for (let k = 0; k < steps.length; k++) { if (steps[k].arrTs <= p.ts) idx = k; else break; }
+    groups[idx].push([p.lat, p.lng]);
+  }
+  const color = t.color || "#4f6df5";
+  groups.forEach(g => {
+    if (g.length < 2) return;
+    const pl = L.polyline(g, { color, weight: 2, opacity: 0.55, dashArray: "2 6", lineJoin: "round", lineCap: "round" }).addTo(map);
+    window._wanderLayers.push(pl);
+  });
+}
+
+function toggleWander() {
+  window._showWander = window._showWander === false; // bascule (undefined => true par défaut)
+  renderTripDetail(document.getElementById("main"));
+  toast(window._showWander === false ? "🐾 Déambulations masquées" : "🐾 Déambulations affichées");
+}
+
 // Marqueurs « photo » sur la carte (appelé depuis initStepMap)
 function addGeoPhotoMarkers(map, t, pts) {
   window._geoMarkers = {};
