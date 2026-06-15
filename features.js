@@ -920,8 +920,11 @@ function parseExifAll(view, start) {
         const off = cnt > 4 ? tiff + u32(e + 8) : e + 8;
         let s = "";
         for (let k = 0; k < Math.min(cnt, 19); k++) s += String.fromCharCode(view.getUint8(off + k));
-        const m = s.match(/^(\d{4}):(\d{2}):(\d{2})/);
-        if (m) out.date = `${m[1]}-${m[2]}-${m[3]}`;
+        // On garde l'heure (out.dt) en plus de la date : utile pour reconstruire
+        // l'ordre des étapes au sein d'une même journée.
+        const m = s.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+        if (m) { out.date = `${m[1]}-${m[2]}-${m[3]}`; out.dt = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`; }
+        else { const m2 = s.match(/^(\d{4}):(\d{2}):(\d{2})/); if (m2) out.date = `${m2[1]}-${m2[2]}-${m2[3]}`; }
         break;
       }
     }

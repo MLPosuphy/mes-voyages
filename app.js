@@ -560,6 +560,18 @@ function openTripFromPhotos() {
     <div id="tfp-status" class="muted small" style="margin-top:12px;text-align:center;"></div>`);
 }
 
+// Horodatage d'une photo (ms) : EXIF complet (avec heure) > heure dans le nom de fichier > date seule
+function photoTimestamp(meta, name) {
+  if (meta && meta.dt) { const t = Date.parse(meta.dt); if (isFinite(t)) return t; }
+  const fn = (name || "").match(/(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})[ _T-]?(\d{2})?(\d{2})?(\d{2})?/);
+  if (fn) {
+    const t = Date.parse(`${fn[1]}-${fn[2]}-${fn[3]}T${fn[4] || "12"}:${fn[5] || "00"}:${fn[6] || "00"}`);
+    if (isFinite(t)) return t;
+  }
+  if (meta && meta.date) { const t = Date.parse(meta.date + "T12:00:00"); if (isFinite(t)) return t; }
+  return null;
+}
+
 // Reverse-geocode best-effort (ville + pays) d'un point — sert à pré-remplir le formulaire
 async function reverseGeocode(lat, lng) {
   try {
@@ -583,7 +595,8 @@ async function analyzePhotosForTrip(input) {
     const meta = await readExifMeta(f);
     const gps = meta && meta.gps;
     const date = (meta && meta.date) || (typeof planPhotoDate === "function" ? planPhotoDate({ name: f.name }, null) : null);
-    metas.push({ file: f, gps, date });
+    const ts = photoTimestamp(meta, f.name);
+    metas.push({ file: f, gps, date, ts });
   }
   if (!metas.length) { if (status) status.textContent = "Aucune image lisible dans la sélection 🤔"; return; }
   window._tfp = { metas };
@@ -631,10 +644,59 @@ function showTripFromPhotosForm(s) {
       <div class="form-group"><label>Budget</label><input id="tfp-budget" type="number" min="0" step="10" placeholder="0"></div>
     </div>
     <p class="muted small">Les <b>${s.geo}</b> photo(s) géolocalisée(s) seront placées sur la carte du voyage.${noGps > 0 ? ` Les ${noGps} sans GPS ne seront pas placées (mais tu pourras les joindre au journal).` : ""}</p>
+    ${s.geo >= 2 ? `<div class="form-group" style="margin-top:4px;">
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
+        <input type="checkbox" id="tfp-itinerary" checked style="width:auto;margin-top:3px;">
+        <span>🧭 <b>Reconstruire l'itinéraire</b> à partir des photos<br>
+          <span class="muted small">On regroupe tes photos par lieu et par jour pour deviner les étapes du voyage, dans l'ordre, avec le moyen de transport le plus probable. (Tu pourras tout ajuster ensuite.)</span></span></label>
+    </div>` : ""}
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="window._tfp=null;closeModal()">Annuler</button>
       <button class="btn btn-primary" id="tfp-create" onclick="createTripFromPhotos()">🎉 Créer le voyage</button>
     </div>`);
+}
+
+/* Reconstruction d'itinéraire — regroupe les points photo {lat,lng,ts} en
+   « séjours » successifs : un nouveau séjour démarre quand on s'éloigne de
+   plus de gapKm du centre du séjour courant (centroïde glissant). */
+function clusterStays(pts, gapKm) {
+  const sorted = pts.filter(p => p.ts != null).sort((a, b) => a.ts - b.ts);
+  const stays = [];
+  let cur = null;
+  for (const p of sorted) {
+    if (cur) {
+      const c = { lat: cur.sumLat / cur.n, lng: cur.sumLng / cur.n };
+      if (haversineKm(c, p) <= gapKm) {
+        cur.sumLat += p.lat; cur.sumLng += p.lng; cur.n++; cur.last = p.ts; cur.count++;
+        continue;
+      }
+      stays.push(cur);
+    }
+    cur = { sumLat: p.lat, sumLng: p.lng, n: 1, first: p.ts, last: p.ts, count: 1 };
+  }
+  if (cur) stays.push(cur);
+  return stays.map(c => ({ lat: c.sumLat / c.n, lng: c.sumLng / c.n, first: c.first, last: c.last, count: c.count }));
+}
+
+// On élargit le seuil tant qu'il y a trop d'étapes (évite un itinéraire illisible)
+function reconstructStays(pts) {
+  let gap = 30, stays = clusterStays(pts, gap);
+  while (stays.length > 30 && gap < 600) { gap *= 1.7; stays = clusterStays(pts, gap); }
+  return stays;
+}
+
+// Moyen de transport le plus probable entre 2 séjours (distance + vitesse implicite)
+function guessLegTransport(a, b) {
+  const km = haversineKm(a, b);
+  const hours = (b.first - a.last) / 3600000;
+  const speed = hours > 0.05 ? km / hours : Infinity;
+  if (km > 600 || speed > 250) return "avion";
+  if (km > 250 || speed > 120) return "train";
+  return "voiture";
+}
+
+function isoOfDate(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 
 async function createTripFromPhotos() {
@@ -665,10 +727,12 @@ async function createTripFromPhotos() {
     tags: ["photos"], notes: ""
   });
 
+  const wantsItinerary = !!((document.getElementById("tfp-itinerary") || {}).checked);
   const btn = document.getElementById("tfp-create");
   if (btn) { btn.disabled = true; btn.textContent = "⏳ Import des photos…"; }
 
   let added = 0, nogps = 0;
+  const geoPts = []; // pour reconstruire l'itinéraire
   for (let i = 0; i < tfp.metas.length; i++) {
     const m = tfp.metas[i];
     if (!m.gps) { nogps++; continue; }
@@ -687,15 +751,41 @@ async function createTripFromPhotos() {
     trip.geophotos.push(m.date
       ? { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng, date: m.date }
       : { id, name: m.file.name, lat: m.gps.lat, lng: m.gps.lng });
+    geoPts.push({ lat: m.gps.lat, lng: m.gps.lng, ts: m.ts });
     added++;
+  }
+
+  // 🧭 Reconstruction de l'itinéraire : regroupe les photos en séjours ordonnés,
+  // nomme chaque étape (reverse-geocode) et devine le transport entre elles.
+  let stepCount = 0;
+  if (wantsItinerary && geoPts.length >= 2) {
+    const stays = reconstructStays(geoPts);
+    for (let i = 0; i < stays.length; i++) {
+      const c = stays[i];
+      if (btn) btn.textContent = `🧭 Reconstruction… étape ${i + 1}/${stays.length}`;
+      let name = "";
+      try { const g = await reverseGeocode(c.lat, c.lng); name = g.city || g.country || ""; } catch (e) {}
+      if (!name) name = "Étape " + (i + 1);
+      const d1 = new Date(c.first), d2 = new Date(c.last);
+      const sameDay = isoOfDate(d1) === isoOfDate(d2);
+      const dateLabel = sameDay ? fmtDateShort(isoOfDate(d1)) : `${fmtDateShort(isoOfDate(d1))} → ${fmtDateShort(isoOfDate(d2))}`;
+      trip.steps.push({
+        id: uid(), name, lat: c.lat, lng: c.lng,
+        transport: i === 0 ? "voiture" : guessLegTransport(stays[i - 1], c),
+        notes: `📷 ${c.count} photo(s) · ${dateLabel}`,
+        visited: true, visitedAt: isoOfDate(d1)
+      });
+      stepCount++;
+      if (i < stays.length - 1) await new Promise(r => setTimeout(r, 1100)); // 1 req/s : politesse Nominatim
+    }
   }
 
   state.trips.push(trip);
   saveState();
   window._tfp = null;
   closeModal();
-  toast(`🎉 Voyage « ${title} » créé · ${added} photo(s) sur la carte${nogps ? ` · ${nogps} sans GPS` : ""}`);
-  openTrip(trip.id, added ? "carte" : "itineraire");
+  toast(`🎉 « ${title} » créé · ${added} photo(s)${stepCount ? ` · ${stepCount} étape(s) reconstruites 🧭` : ""}${nogps ? ` · ${nogps} sans GPS` : ""}`);
+  openTrip(trip.id, (added || stepCount) ? "carte" : "itineraire");
 }
 
 function deleteTrip(id) {
